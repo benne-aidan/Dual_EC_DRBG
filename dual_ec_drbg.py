@@ -30,8 +30,8 @@ class point:
         a = op.mod(a, self.curve.mod)
         while a > 0:
             if a % 2 == 1:
-                result = add_points(result, current)
-            current = add_points(current, current)
+                result = add_points(result, current, self.curve)
+            current = add_points(current, current, self.curve)
             a >>= 1
             
         return result
@@ -50,23 +50,43 @@ class DRBG:
     def validate(self):
         p = self.E.mod
         for point in [self.P, self.Q]:
+            if point is None:
+                print('ERROR: Point cannot be None')
+                exit(1)
             left = op.powmod(point.y, 2, p)
             x3 = op.powmod(point.x, 3, p)       # x^3
             ax = op.mod(op.mul(self.E.a, point.x), p)
             right = op.mod(op.add(op.add(x3, ax), self.E.b), p)
             if left != right:
-                print('ERROR: Point-curve validation insuccessful')
+                print('ERROR: Point-curve validation unsuccessful')
                 exit(1)
         return
         
     
     def rand(self):
-        self.state = (self.P.scalar_mult(self.state)).x
-        r = self.Q.scalar_mult(self.state).x
+        new_point = self.P.scalar_mult(self.state)
+        if new_point is None:
+            print('ERROR: Invalid state - point at infinity')
+            exit(1)
+        self.state = new_point.x
+        r_point = self.Q.scalar_mult(self.state)
+        if r_point is None:
+            print('ERROR: Invalid random point - point at infinity')
+            exit(1)
+        r = r_point.x
+        truncated = truncate(r)
+
+
+        if truncated >= (1 << (256 - 16)):
+            print('WARNING: Truncated value exceeds expected range')
+        return truncated
         
 
 # `none` is used to represent point at infinity (group identity element). It must be checked for.
-def add_points(P, Q, E):
+def add_points(P, Q, E=None):
+    # Use P's curve if E not provided
+    if E is None and P is not None:
+        E = P.curve
     # Handle identity case
     if P is None:
         return Q
@@ -104,6 +124,21 @@ def truncate(x, bits=256, m=16):
     truncated = x & mask
     return truncated
 
+seed = op.mpz(0xC49D360886E704936A6678E1139D26B7819F7E90)
+a_spec = op.mpz(0xffffffff00000001000000000000000000000000fffffffffffffffffffffffc)
+b_spec = op.mpz(0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b)
+p_spec = op.mpz(0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff)
+curve_spec = EC(a_spec, b_spec, p_spec)
 
-x = 85
-print(truncate(x, 8, 4))
+P_x = op.mpz(0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296)
+P_y = op.mpz(0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5)
+P = point(curve_spec, P_x, P_y)
+
+Q_x = op.mpz(0xc97445f45cdef9f0d3e05e1e585fc297235b82b5be8ff3efca67c59852018192)
+Q_y = op.mpz(0xb28ef557ba31dfcbdd21ac46e2a91e3c304f44cb87058ada2cb815151e610046)
+Q = point(curve_spec, Q_x, Q_y)
+
+gen = DRBG(seed, P, Q, curve_spec)
+gen.validate()
+for i in range(10):
+    print(gen.rand() % 10)
