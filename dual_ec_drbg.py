@@ -62,21 +62,27 @@ class DRBG:
                 exit(1)
         return
         
-    
+    # Function for generating next bit sequence
     def rand(self):
         new_point = self.P.scalar_mult(self.state)
+        
+        # this should never happen
         if new_point is None:
-            print('ERROR: Invalid state - point at infinity')
+            print('ERROR: Invalid state')
             exit(1)
+
         self.state = new_point.x
         r_point = self.Q.scalar_mult(self.state)
+
+        # this should also never happen
         if r_point is None:
-            print('ERROR: Invalid random point - point at infinity')
+            print('ERROR: Invalid random point')
             exit(1)
+
         r = r_point.x
         truncated = truncate(r)
 
-
+        # i dont know how this would even be possible
         if truncated >= (1 << (256 - 16)):
             print('WARNING: Truncated value exceeds expected range')
         return truncated
@@ -97,7 +103,6 @@ def add_points(P, Q, E=None):
     if P.x == Q.x and P.y == -Q.y:
         return None
     
-
     # Otherwise, compute slope between two points (or tangent line if P = Q)
     p = E.mod
     slope = None
@@ -124,21 +129,65 @@ def truncate(x, bits=256, m=16):
     truncated = x & mask
     return truncated
 
-seed = op.mpz(0xC49D360886E704936A6678E1139D26B7819F7E90)
-a_spec = op.mpz(0xffffffff00000001000000000000000000000000fffffffffffffffffffffffc)
-b_spec = op.mpz(0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b)
-p_spec = op.mpz(0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff)
-curve_spec = EC(a_spec, b_spec, p_spec)
+def enumerate_untruncated_x(truncated_x, bits=256, m=16):
+    # number of bits kept after truncation
+    kept_bits = bits - m
+    mask = (op.mpz(1) << kept_bits) - 1
+    
+    # check correct input size
+    if truncated_x > mask:
+        print("ERROR: x-coordinate exceeds expected length")
+    
+    # generate all possible 16-bit prefixes
+    candidates = []
+    for prefix in range(0, 1 << m):
+        candidate = (op.mpz(prefix) << kept_bits) | truncated_x
+        candidates.append(candidate)
+    
+    return candidates
 
-P_x = op.mpz(0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296)
-P_y = op.mpz(0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5)
-P = point(curve_spec, P_x, P_y)
+# Runs Dual_EC_DRBG according to specification
+def run_spec_gen(amt=10, range=10):
+    seed = op.mpz(0xC49D360886E704936A6678E1139D26B7819F7E90)
+    a_spec = op.mpz(0xffffffff00000001000000000000000000000000fffffffffffffffffffffffc)
+    b_spec = op.mpz(0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b)
+    p_spec = op.mpz(0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff)
+    curve_spec = EC(a_spec, b_spec, p_spec)
 
-Q_x = op.mpz(0xc97445f45cdef9f0d3e05e1e585fc297235b82b5be8ff3efca67c59852018192)
-Q_y = op.mpz(0xb28ef557ba31dfcbdd21ac46e2a91e3c304f44cb87058ada2cb815151e610046)
-Q = point(curve_spec, Q_x, Q_y)
+    P_x = op.mpz(0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296)
+    P_y = op.mpz(0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5)
+    P = point(curve_spec, P_x, P_y)
 
-gen = DRBG(seed, P, Q, curve_spec)
-gen.validate()
-for i in range(10):
-    print(gen.rand() % 10)
+    Q_x = op.mpz(0xc97445f45cdef9f0d3e05e1e585fc297235b82b5be8ff3efca67c59852018192)
+    Q_y = op.mpz(0xb28ef557ba31dfcbdd21ac46e2a91e3c304f44cb87058ada2cb815151e610046)
+    Q = point(curve_spec, Q_x, Q_y)
+
+    gen = DRBG(seed, P, Q, curve_spec)
+    gen.validate()
+    for i in range(amt):
+        print(gen.rand() % range)
+
+# Maliciously chooses d
+def backdoor():
+    seed = op.mpz(0xC49D360886E704936A6678E1139D26B7819F7E90)
+    a_spec = op.mpz(0xffffffff00000001000000000000000000000000fffffffffffffffffffffffc)
+    b_spec = op.mpz(0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b)
+    p_spec = op.mpz(0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff)
+    curve_spec = EC(a_spec, b_spec, p_spec)
+
+    Q_x = op.mpz(0xc97445f45cdef9f0d3e05e1e585fc297235b82b5be8ff3efca67c59852018192)
+    Q_y = op.mpz(0xb28ef557ba31dfcbdd21ac46e2a91e3c304f44cb87058ada2cb815151e610046)
+    Q = point(curve_spec, Q_x, Q_y)
+
+    # randomly chosen
+    d = op.mpz(0x5FFCFE1A5F2AFBC7E9147F91F5A2C)
+    P = Q.scalar_mult(d)
+
+    gen = DRBG(seed, P, Q, curve_spec)
+    gen.validate()
+
+
+
+
+
+backdoor()
