@@ -1,4 +1,5 @@
 import gmpy2 as op
+import timeit
 
 # Elliptic curve, parameterized by coefficients a, b, and modulus of field
 # No more information is needed as Dual_EC_DRBG always uses a field with prime modulus
@@ -15,7 +16,7 @@ class point:
         self.x = x
         self.y = y
     
-    # Scalar multiplication by a (int)
+    # Scalar multiplication by 'a' (int)
     def scalar_mult(self, a):
         # Identity and 0 cases
         if a == 0 or self is None:
@@ -53,10 +54,10 @@ class DRBG:
             if point is None:
                 print('ERROR: Point cannot be None')
                 exit(1)
-            left = op.powmod(point.y, 2, p)
-            x3 = op.powmod(point.x, 3, p)       # x^3
+            left = op.powmod(point.y, 2, p)                         # Left side of equation (y^2)
+            x3 = op.powmod(point.x, 3, p)                           # x^3
             ax = op.mod(op.mul(self.E.a, point.x), p)
-            right = op.mod(op.add(op.add(x3, ax), self.E.b), p)
+            right = op.mod(op.add(op.add(x3, ax), self.E.b), p)     # Right side of equation (x^3 + ax + b)
             if left != right:
                 print('ERROR: Point-curve validation unsuccessful')
                 exit(1)
@@ -82,9 +83,10 @@ class DRBG:
         r = r_point.x
         truncated = truncate(r)
 
-        # i dont know how this would even be possible
+        # Ensure valid truncate() output
         if truncated >= (1 << (256 - 16)):
-            print('WARNING: Truncated value exceeds expected range')
+            print('ERROR: Truncated value exceeds expected range')
+            exit(1)
         return truncated
         
 
@@ -129,6 +131,7 @@ def truncate(x, bits=256, m=16):
     truncated = x & mask
     return truncated
 
+# Enumerates possibilities for X(s_iQ)
 def enumerate_untruncated_x(truncated_x, bits=256, m=16):
     # number of bits kept after truncation
     kept_bits = bits - m
@@ -146,8 +149,14 @@ def enumerate_untruncated_x(truncated_x, bits=256, m=16):
     
     return candidates
 
+# Returns true if a is a quadratic residue mod p
+def is_QR(a, p):
+    result = op.powmod(a, (p-1)//2, p)
+
+    return True if result == 1 else False 
+
 # Runs Dual_EC_DRBG according to specification
-def run_spec_gen(amt=10, range=10):
+def run_spec_gen(amt=10, max_range=10):
     seed = op.mpz(0xC49D360886E704936A6678E1139D26B7819F7E90)
     a_spec = op.mpz(0xffffffff00000001000000000000000000000000fffffffffffffffffffffffc)
     b_spec = op.mpz(0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b)
@@ -165,7 +174,7 @@ def run_spec_gen(amt=10, range=10):
     gen = DRBG(seed, P, Q, curve_spec)
     gen.validate()
     for i in range(amt):
-        print(gen.rand() % range)
+        print(gen.rand() % max_range)
 
 # Maliciously chooses d
 def backdoor():
@@ -183,11 +192,75 @@ def backdoor():
     d = op.mpz(0x5FFCFE1A5F2AFBC7E9147F91F5A2C)
     P = Q.scalar_mult(d)
 
+
+    # New DRBG
     gen = DRBG(seed, P, Q, curve_spec)
     gen.validate()
 
+    # Get r_1 and r_2
+    r1 = op.mpz(gen.rand())
+    r2 = op.mpz(gen.rand())
+
+    # Enumerated possibilities for X(s_iQ) from r_i = Trunc(X(s_iQ), m)
+    XsiQ_candidates = enumerate_untruncated_x(r1)
+    
+    # Enumerating possible points on curve
+    siQ_candidates = []
+    for X in XsiQ_candidates:
+        # Check if z= x^3 + ax + b is a QR
+        X3 = op.powmod(X, 3, p_spec)                                # x^3
+        aX = op.mod(op.mul(a_spec, X), p_spec)                      # ax
+        z = op.mod(op.add(op.add(X3, aX), b_spec), p_spec)          # z = x^3 + ax + b
+        if not is_QR(z, p_spec):
+            continue
+
+        # z is a QR, compute y = sqrt(z)
+        y = set()
+        if op.mod(p_spec, 4) != 3:
+            print('ERROR: bad p')
+            exit(1)
+        y1 = op.powmod(z, (p_spec+1)//4, p_spec)
+        y2 = op.mod(-y1, p_spec)
+        y.add(y1)
+        y.add(y2)
+
+        for root in y:
+            siQ_candidates.append(point(curve_spec, X, root))
 
 
+    # Check each candidate s_iQ using r2 = Trunc(X(X(s_idQ)Q), m)
+    valid_siQ = set()
+    for R in siQ_candidates:
+        # Using secret knowledge of d
+        dR = R.scalar_mult(d)
+        product = Q.scalar_mult(dR.x)
+        Trunc = truncate(product.x)
+        if Trunc == r2:
+            valid_siQ.add(R)
+    
+    possible_states = set()
+    print('Possible states are:')
+    for s in valid_siQ:
+        sidQ = s.scalar_mult(d)
+        possible_states.add(sidQ.x)
+        print(hex(sidQ.x))
 
+    print('Actual state:')
+    print(hex(gen.state))
+
+    # Internal state has now either been found or narrowed down to a very small handful of guesses, which allows computation
+    # of all future random bits
+    
+
+    
+    
+# run_spec_gen()
+
+start = timeit.default_timer()
 
 backdoor()
+
+stop = timeit.default_timer()
+
+print(f'Total runtime: {stop - start} seconds')
+
